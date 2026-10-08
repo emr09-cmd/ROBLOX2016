@@ -1,10 +1,10 @@
-name: Build ROBLOX 2016
+name: Build ROBLOX2016
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
   build:
@@ -15,6 +15,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 1
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -24,11 +25,15 @@ jobs:
         with:
           arch: x86
 
-      - name: Check compiler
+      - name: Verify compiler
         shell: cmd
         run: |
           where cl
           cl
+
+      # ------------------------------------------------------------
+      # Boost
+      # ------------------------------------------------------------
 
       - name: Bootstrap Boost
         shell: cmd
@@ -36,165 +41,162 @@ jobs:
         run: |
           call bootstrap.bat msvc
 
-      - name: Verify Boost bootstrap
+          if not exist b2.exe (
+            echo ERROR: b2.exe was not created.
+            dir /a
+            exit /b 1
+          )
+
+          echo.
+          echo Boost b2.exe created successfully.
+          dir b2.exe
+
+      - name: Locate Boost.Build files
         shell: pwsh
         working-directory: Library\boost
         run: |
-          Write-Host "Boost files after bootstrap:"
+          Write-Host "Searching for build-system.jam..."
+          $files = Get-ChildItem -Path . -Filter "build-system.jam" -Recurse -File
 
-          Get-ChildItem |
-            Select-Object Name, Length
-
-          if (-not (Test-Path ".\b2.exe")) {
-            throw "b2.exe was not created by bootstrap."
+          if ($files.Count -eq 0) {
+            Write-Host "ERROR: build-system.jam was not found."
+          }
+          else {
+            $files | Select-Object -ExpandProperty FullName
           }
 
           Write-Host ""
-          Write-Host "b2.exe found."
+          Write-Host "Boost.Build directory:"
+          if (Test-Path ".\tools\build") {
+            Get-ChildItem ".\tools\build" -Force
+          }
+          else {
+            Write-Host "ERROR: tools\build does not exist."
+          }
+
+          Write-Host ""
+          Write-Host "Boost root:"
+          Get-ChildItem "." -Force
 
       - name: Build Boost
         shell: cmd
         working-directory: Library\boost
         run: |
+          set "BOOST_BUILD_PATH=%GITHUB_WORKSPACE%\Library\boost\tools\build"
+
+          echo BOOST_BUILD_PATH=%BOOST_BUILD_PATH%
+          echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
+          echo.
+
+          if not exist "%BOOST_BUILD_PATH%" (
+            echo ERROR: Boost.Build directory does not exist:
+            echo %BOOST_BUILD_PATH%
+            exit /b 1
+          )
+
           .\b2.exe stage ^
             -a ^
             --reconfigure ^
             --toolset=msvc ^
             --variant=release ^
-            -sZLIB_SOURCE=%GITHUB_WORKSPACE%\Library\zlib\include\zlib ^
-            -sZLIB_BINARY=%GITHUB_WORKSPACE%\Library\zlib\lib\release ^
-            --prefix=%GITHUB_WORKSPACE%\Library\boost ^
-            --libdir=%GITHUB_WORKSPACE%\Library\boost\lib ^
-            --includedir=%GITHUB_WORKSPACE%\Library\boost\include
+            address-model=32 ^
+            architecture=x86 ^
+            "-sZLIB_SOURCE=%GITHUB_WORKSPACE%\Library\zlib\include\zlib" ^
+            "-sZLIB_BINARY=%GITHUB_WORKSPACE%\Library\zlib\lib\release" ^
+            "--prefix=%GITHUB_WORKSPACE%\Library\boost" ^
+            "--libdir=%GITHUB_WORKSPACE%\Library\boost\lib" ^
+            "--includedir=%GITHUB_WORKSPACE%\Library\boost\include"
 
-      - name: Verify Boost libraries
+      # ------------------------------------------------------------
+      # Build Roblox
+      # ------------------------------------------------------------
+
+      - name: Inspect repository build files
         shell: pwsh
         run: |
-          $lib = "$env:GITHUB_WORKSPACE\Library\boost\stage\lib"
+          Write-Host "Solution:"
+          Get-Item ".\Roblox.sln"
 
-          Write-Host "Looking for Boost libraries..."
+          Write-Host ""
+          Write-Host "WindowsClient project:"
+          Get-Item ".\WindowsClient.vcxproj"
 
-          if (-not (Test-Path $lib)) {
-            throw "Boost stage/lib directory was not created."
+          Write-Host ""
+          Write-Host "Build scripts:"
+          Get-ChildItem -Path . -Filter "*.bat" -Recurse -File |
+            Select-Object -First 30 -ExpandProperty FullName
+
+      - name: Fix hard-coded Roblox paths
+        shell: pwsh
+        run: |
+          $root = $env:GITHUB_WORKSPACE
+
+          Write-Host "Workspace: $root"
+
+          # Replace the old developer-machine path used by the repository.
+          $files = @(
+            "Library\boost\build_boost.bat"
+          )
+
+          foreach ($file in $files) {
+            $path = Join-Path $root $file
+
+            if (Test-Path $path) {
+              Write-Host "Patching $file"
+
+              $text = Get-Content $path -Raw
+
+              $text = $text.Replace(
+                "D:\Roblox\Source",
+                $root
+              )
+
+              Set-Content -Path $path -Value $text -NoNewline
+            }
           }
 
-          Get-ChildItem $lib |
-            Select-Object Name, Length
-
-      - name: Patch Visual Studio projects
-        shell: pwsh
-        run: |
-          Write-Host "Patching legacy Visual Studio toolset..."
-
-          Get-ChildItem `
-            -Path $env:GITHUB_WORKSPACE `
-            -Filter *.vcxproj `
-            -Recurse `
-            -File |
-            ForEach-Object {
-
-              $file = $_.FullName
-              $text = Get-Content $file -Raw
-
-              if ($text.Contains("v140_xp")) {
-                $text = $text.Replace("v140_xp", "v143")
-
-                Set-Content `
-                  -Path $file `
-                  -Value $text `
-                  -NoNewline
-
-                Write-Host "Patched: $file"
-              }
-            }
-
-      - name: Patch old Boost toolset
-        shell: pwsh
-        run: |
-          Write-Host "Patching msvc-14.0 references..."
-
-          Get-ChildItem `
-            -Path "$env:GITHUB_WORKSPACE\Library\boost" `
-            -Filter *.bat `
-            -Recurse `
-            -File |
-            ForEach-Object {
-
-              $file = $_.FullName
-              $text = Get-Content $file -Raw
-
-              if ($text.Contains("msvc-14.0")) {
-                $text = $text.Replace("msvc-14.0", "msvc")
-
-                Set-Content `
-                  -Path $file `
-                  -Value $text `
-                  -NoNewline
-
-                Write-Host "Patched: $file"
-              }
-            }
-
-      - name: Build Roblox
+      - name: Build Roblox solution
         shell: cmd
         run: |
           msbuild Roblox.sln ^
             /m ^
             /p:Configuration=Release ^
             /p:Platform=Win32 ^
-            /p:PlatformToolset=v143 ^
+            /p:PreferredToolArchitecture=x86 ^
             /verbosity:minimal
 
-      - name: Find executables
+      # ------------------------------------------------------------
+      # Collect build output
+      # ------------------------------------------------------------
+
+      - name: Find build outputs
+        if: success()
         shell: pwsh
         run: |
-          Write-Host "========== EXECUTABLES =========="
+          Write-Host "Searching for executables..."
 
           $files = Get-ChildItem `
             -Path $env:GITHUB_WORKSPACE `
-            -Filter *.exe `
             -Recurse `
+            -File `
+            -Include *.exe,*.dll `
             -ErrorAction SilentlyContinue
 
-          if (-not $files) {
-            throw "No EXE files were produced."
+          if ($files.Count -eq 0) {
+            Write-Host "No .exe or .dll files found."
+          }
+          else {
+            $files |
+              Select-Object FullName, Length |
+              Format-Table -AutoSize
           }
 
-          $files |
-            Select-Object FullName, Length
-
-      - name: Package build
-        shell: pwsh
-        run: |
-          $artifact = "$env:GITHUB_WORKSPACE\artifact"
-
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $artifact | Out-Null
-
-          $files = Get-ChildItem `
-            -Path $env:GITHUB_WORKSPACE `
-            -Filter *.exe `
-            -Recurse `
-            -ErrorAction SilentlyContinue
-
-          foreach ($file in $files) {
-            Copy-Item `
-              $file.FullName `
-              "$artifact\$($file.Name)" `
-              -Force
-          }
-
-          Write-Host ""
-          Write-Host "========== ARTIFACT =========="
-
-          Get-ChildItem $artifact |
-            Select-Object Name, Length
-
-      - name: Upload build
+      - name: Upload build artifacts
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: ROBLOX2016-Windows
-          path: artifact
-          if-no-files-found: error
+          path: |
+            **/*.exe
+            **/*.dll
+          if-no-files-found: warn

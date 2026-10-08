@@ -19,23 +19,71 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Show MSBuild version
+      - name: Setup Visual Studio environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+
+      - name: Check compiler
+        shell: cmd
+        run: |
+          where cl
+          cl
+
+      - name: Bootstrap Boost.Build with MSVC
+        shell: cmd
+        working-directory: Library\boost
+        run: |
+          b2.exe --version
+          if exist b2.exe del /f /q b2.exe
+          if exist b2.obj del /f /q b2.obj
+          if exist bjam.exe del /f /q bjam.exe
+
+          call bootstrap.bat msvc
+
+      - name: Check Boost.Build
+        shell: cmd
+        working-directory: Library\boost
+        run: |
+          b2 --version
+
+      - name: Build Boost libraries
+        shell: cmd
+        working-directory: Library\boost
+        run: |
+          b2 ^
+            -j2 ^
+            toolset=msvc ^
+            variant=release ^
+            link=static ^
+            runtime-link=static ^
+            architecture=x86 ^
+            address-model=32 ^
+            --build-dir=build ^
+            stage
+
+      - name: Patch old Visual Studio toolset
         shell: pwsh
-        run: msbuild -version
-
-      - name: Bootstrap Boost
-        shell: cmd
-        working-directory: Library\boost
         run: |
-          call bootstrap.bat
+          Write-Host "Replacing legacy v140_xp toolset with v143..."
 
-      - name: Build Boost
-        shell: cmd
-        working-directory: Library\boost
-        run: |
-          call b2 -j2
+          Get-ChildItem `
+            -Path $env:GITHUB_WORKSPACE `
+            -Filter *.vcxproj `
+            -Recurse `
+            -File |
+            ForEach-Object {
+              $file = $_.FullName
+              $text = Get-Content $file -Raw
 
-      - name: Build Roblox
+              if ($text -match 'v140_xp') {
+                $text = $text -replace 'v140_xp', 'v143'
+                Set-Content -Path $file -Value $text -NoNewline
+                Write-Host "Patched $file"
+              }
+            }
+
+      - name: Build WindowsClient
         shell: cmd
         run: |
           msbuild Roblox.sln ^
@@ -45,10 +93,10 @@ jobs:
             /p:PlatformToolset=v143 ^
             /verbosity:minimal
 
-      - name: Find executables
+      - name: Search for executables
         shell: pwsh
         run: |
-          Write-Host "Searching for executables..."
+          Write-Host "========== EXE FILES =========="
 
           Get-ChildItem `
             -Path $env:GITHUB_WORKSPACE `
@@ -57,13 +105,15 @@ jobs:
             -ErrorAction SilentlyContinue |
             Select-Object FullName, Length
 
-      - name: Prepare artifact
+      - name: Package executables
         shell: pwsh
         run: |
+          $artifact = "$env:GITHUB_WORKSPACE\artifact"
+
           New-Item `
             -ItemType Directory `
             -Force `
-            -Path "$env:GITHUB_WORKSPACE\artifact"
+            -Path $artifact | Out-Null
 
           $files = Get-ChildItem `
             -Path $env:GITHUB_WORKSPACE `
@@ -72,19 +122,24 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if (-not $files) {
-            throw "No executable files were produced."
+            throw "The build completed without producing an EXE."
           }
 
           foreach ($file in $files) {
             Copy-Item `
               $file.FullName `
-              "$env:GITHUB_WORKSPACE\artifact\$($file.Name)" `
+              "$artifact\$($file.Name)" `
               -Force
           }
+
+          Write-Host "========== ARTIFACT =========="
+
+          Get-ChildItem $artifact |
+            Select-Object Name, Length
 
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
-          name: ROBLOX2016-build
+          name: ROBLOX2016-Windows
           path: artifact
           if-no-files-found: error

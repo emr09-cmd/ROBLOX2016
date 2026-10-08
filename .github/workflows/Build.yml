@@ -232,6 +232,69 @@ jobs:
             Write-Host "OK: $relative"
           }
 
+      - name: Patch Boost 1.74 MSVC toolset
+        shell: pwsh
+        run: |
+          $boost = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "Library\boost"
+
+          $msvcJam = Join-Path `
+            $boost `
+            "tools\build\src\tools\msvc.jam"
+
+          if (-not (Test-Path $msvcJam)) {
+            throw "Boost MSVC toolset file was not found: $msvcJam"
+          }
+
+          Write-Host "Boost MSVC toolset file:"
+          Write-Host $msvcJam
+
+          $text = Get-Content `
+            $msvcJam `
+            -Raw
+
+          # Boost 1.74 predates VS2022.
+          #
+          # We are using VS2022's x86 compiler but exposing it to
+          # Boost.Build as the compatible MSVC 14.2 toolset.
+          #
+          # Make sure Boost does not reject the newer compiler version.
+
+          $text = $text.Replace(
+            "14.3",
+            "14.2"
+          )
+
+          $text = $text.Replace(
+            "14.4",
+            "14.2"
+          )
+
+          $text = $text.Replace(
+            "14.5",
+            "14.2"
+          )
+
+          Set-Content `
+            -Path $msvcJam `
+            -Value $text `
+            -NoNewline
+
+          Write-Host ""
+          Write-Host "Boost MSVC toolset patched."
+
+          Write-Host ""
+          Write-Host "Checking MSVC toolset references..."
+
+          Select-String `
+            -Path $msvcJam `
+            -Pattern "14\.2|14\.3|14\.4|14\.5" `
+            -AllMatches |
+            ForEach-Object {
+              Write-Host $_.Line
+            }
+
       - name: Configure Boost for GitHub Actions MSVC
         shell: cmd
         working-directory: Library\boost
@@ -391,7 +454,8 @@ jobs:
 
           $directories = @(
             "lib",
-            "include"
+            "include",
+            "stage\lib"
           )
 
           foreach ($relative in $directories) {
@@ -413,7 +477,7 @@ jobs:
 
           $libDirectory = Join-Path `
             $boost `
-            "lib"
+            "stage\lib"
 
           if (Test-Path $libDirectory) {
 
@@ -433,7 +497,7 @@ jobs:
             }
           }
           else {
-            Write-Host "Boost lib directory does not exist."
+            Write-Host "Boost stage\lib directory does not exist."
           }
 
       - name: Fix hard-coded Roblox paths

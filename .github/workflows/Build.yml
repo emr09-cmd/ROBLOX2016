@@ -30,52 +30,61 @@ jobs:
           where cl
           cl
 
-      - name: Inspect Boost scripts
-        shell: pwsh
+      - name: Bootstrap Boost
+        shell: cmd
+        working-directory: Library\boost
         run: |
-          Write-Host "Boost directory:"
-          Get-ChildItem "$env:GITHUB_WORKSPACE\Library\boost" |
+          call bootstrap.bat msvc
+
+      - name: Verify Boost bootstrap
+        shell: pwsh
+        working-directory: Library\boost
+        run: |
+          Write-Host "Boost files after bootstrap:"
+
+          Get-ChildItem |
             Select-Object Name, Length
 
+          if (-not (Test-Path ".\b2.exe")) {
+            throw "b2.exe was not created by bootstrap."
+          }
+
           Write-Host ""
-          Write-Host "Build Boost script:"
-          Get-Content "$env:GITHUB_WORKSPACE\Library\boost\build_boost.bat"
+          Write-Host "b2.exe found."
 
       - name: Build Boost
         shell: cmd
         working-directory: Library\boost
         run: |
-          call build_boost.bat
+          .\b2.exe stage ^
+            -a ^
+            --reconfigure ^
+            --toolset=msvc ^
+            --variant=release ^
+            -sZLIB_SOURCE=%GITHUB_WORKSPACE%\Library\zlib\include\zlib ^
+            -sZLIB_BINARY=%GITHUB_WORKSPACE%\Library\zlib\lib\release ^
+            --prefix=%GITHUB_WORKSPACE%\Library\boost ^
+            --libdir=%GITHUB_WORKSPACE%\Library\boost\lib ^
+            --includedir=%GITHUB_WORKSPACE%\Library\boost\include
 
-      - name: Check Boost output
+      - name: Verify Boost libraries
         shell: pwsh
         run: |
-          Write-Host "Searching for Boost libraries..."
+          $lib = "$env:GITHUB_WORKSPACE\Library\boost\stage\lib"
 
-          $libs = Get-ChildItem `
-            "$env:GITHUB_WORKSPACE\Library\boost" `
-            -Filter *.lib `
-            -Recurse `
-            -ErrorAction SilentlyContinue
+          Write-Host "Looking for Boost libraries..."
 
-          if (-not $libs) {
-            Write-Host "No Boost libraries found."
-            Write-Host ""
-            Write-Host "Boost directory contents:"
-            Get-ChildItem `
-              "$env:GITHUB_WORKSPACE\Library\boost" `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Select-Object FullName
-          }
-          else {
-            $libs | Select-Object FullName, Length
+          if (-not (Test-Path $lib)) {
+            throw "Boost stage/lib directory was not created."
           }
 
-      - name: Patch Visual Studio toolset
+          Get-ChildItem $lib |
+            Select-Object Name, Length
+
+      - name: Patch Visual Studio projects
         shell: pwsh
         run: |
-          Write-Host "Changing v140_xp to v143..."
+          Write-Host "Patching legacy Visual Studio toolset..."
 
           Get-ChildItem `
             -Path $env:GITHUB_WORKSPACE `
@@ -89,6 +98,34 @@ jobs:
 
               if ($text.Contains("v140_xp")) {
                 $text = $text.Replace("v140_xp", "v143")
+
+                Set-Content `
+                  -Path $file `
+                  -Value $text `
+                  -NoNewline
+
+                Write-Host "Patched: $file"
+              }
+            }
+
+      - name: Patch old Boost toolset
+        shell: pwsh
+        run: |
+          Write-Host "Patching msvc-14.0 references..."
+
+          Get-ChildItem `
+            -Path "$env:GITHUB_WORKSPACE\Library\boost" `
+            -Filter *.bat `
+            -Recurse `
+            -File |
+            ForEach-Object {
+
+              $file = $_.FullName
+              $text = Get-Content $file -Raw
+
+              if ($text.Contains("msvc-14.0")) {
+                $text = $text.Replace("msvc-14.0", "msvc")
+
                 Set-Content `
                   -Path $file `
                   -Value $text `
@@ -111,7 +148,7 @@ jobs:
       - name: Find executables
         shell: pwsh
         run: |
-          Write-Host "========== EXE FILES =========="
+          Write-Host "========== EXECUTABLES =========="
 
           $files = Get-ChildItem `
             -Path $env:GITHUB_WORKSPACE `
@@ -120,13 +157,13 @@ jobs:
             -ErrorAction SilentlyContinue
 
           if (-not $files) {
-            throw "No executable files were produced."
+            throw "No EXE files were produced."
           }
 
           $files |
             Select-Object FullName, Length
 
-      - name: Package executables
+      - name: Package build
         shell: pwsh
         run: |
           $artifact = "$env:GITHUB_WORKSPACE\artifact"
@@ -148,6 +185,9 @@ jobs:
               "$artifact\$($file.Name)" `
               -Force
           }
+
+          Write-Host ""
+          Write-Host "========== ARTIFACT =========="
 
           Get-ChildItem $artifact |
             Select-Object Name, Length

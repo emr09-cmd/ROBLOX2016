@@ -28,19 +28,23 @@ jobs:
       - name: Verify compiler
         shell: cmd
         run: |
+          echo ===== Compiler =====
           where cl
           cl
 
       - name: Check Boost version
         shell: pwsh
         run: |
-          $versionFile = Join-Path $env:GITHUB_WORKSPACE "Library\boost\boost\version.hpp"
+          $versionFile = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "Library\boost\boost\version.hpp"
 
           if (-not (Test-Path $versionFile)) {
             throw "Boost version.hpp was not found."
           }
 
           $text = Get-Content $versionFile -Raw
+
           Write-Host $text
 
           if ($text -notmatch "BOOST_VERSION 107400") {
@@ -73,7 +77,10 @@ jobs:
             "boost-1.74.0"
 
           if (Test-Path $temp) {
-            Remove-Item $temp -Recurse -Force
+            Remove-Item `
+              $temp `
+              -Recurse `
+              -Force
           }
 
           New-Item `
@@ -110,7 +117,10 @@ jobs:
             throw "Extracted Boost 1.74.0 directory was not found."
           }
 
-          # Restore missing Boost.Build files.
+          # ------------------------------------------------------------
+          # Restore Boost.Build
+          # ------------------------------------------------------------
+
           $officialBuild = Join-Path `
             $official `
             "tools\build"
@@ -140,7 +150,10 @@ jobs:
               -Force
           }
 
-          # Restore any missing files from Boost's official 1.74 source.
+          # ------------------------------------------------------------
+          # Restore missing Boost library files
+          # ------------------------------------------------------------
+
           $officialLibs = Join-Path `
             $official `
             "libs"
@@ -190,6 +203,10 @@ jobs:
           }
 
           Write-Host "Missing Boost files restored: $copied"
+
+          # ------------------------------------------------------------
+          # Verify critical files
+          # ------------------------------------------------------------
 
           $checks = @(
             "tools\build\src\build-system.jam",
@@ -245,32 +262,61 @@ jobs:
           >> project-config.jam echo option.set keep-going : false ;
 
           echo.
-          echo project-config.jam:
+          echo ===== project-config.jam =====
           type project-config.jam
 
           echo.
-          echo Compiler:
+          echo ===== Compiler =====
           where cl
           cl
 
           echo.
-          echo B2:
-          b2.exe --version
+          echo ===== B2 executable =====
+          dir b2.exe
 
-      - name: Verify Boost compiler configuration
+      - name: Diagnose Boost compiler configuration
         shell: cmd
         working-directory: Library\boost
         run: |
-          echo ===== Boost configuration =====
+          echo ===== Boost project configuration =====
           type project-config.jam
 
           echo.
-          echo ===== Running B2 configuration diagnostics =====
+          echo ===== Boost configuration files =====
+
+          if exist site-config.jam (
+            echo ----- site-config.jam -----
+            type site-config.jam
+          ) else (
+            echo No site-config.jam
+          )
+
+          if exist user-config.jam (
+            echo ----- user-config.jam -----
+            type user-config.jam
+          ) else (
+            echo No user-config.jam
+          )
+
+          echo.
+          echo ===== Environment =====
+          echo BOOST_BUILD_PATH=%BOOST_BUILD_PATH%
+          echo BOOST_ROOT=%BOOST_ROOT%
+
+          echo.
+          echo ===== B2 configuration diagnostic =====
 
           .\b2.exe ^
             --debug-configuration ^
             --toolset=msvc-14.2 ^
-            --version
+            -n ^
+            stage
+
+          if errorlevel 1 (
+            echo.
+            echo B2 configuration diagnostic returned an error.
+            exit /b 1
+          )
 
       - name: Build Boost
         shell: cmd
@@ -292,7 +338,12 @@ jobs:
           )
 
           echo.
-          echo Starting Boost build...
+          echo ===== Compiler =====
+          where cl
+          cl
+
+          echo.
+          echo ===== Boost Build =====
           echo.
 
           .\b2.exe stage ^
@@ -314,14 +365,67 @@ jobs:
             exit /b 1
           )
 
+      - name: Verify Boost output
+        shell: pwsh
+        run: |
+          $boost = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "Library\boost"
+
+          Write-Host "Checking Boost output directories..."
+
+          $directories = @(
+            "lib",
+            "include"
+          )
+
+          foreach ($relative in $directories) {
+
+            $path = Join-Path `
+              $boost `
+              $relative
+
+            if (Test-Path $path) {
+              Write-Host "OK: $relative"
+            }
+            else {
+              Write-Host "WARNING: $relative was not created."
+            }
+          }
+
+          Write-Host ""
+          Write-Host "Boost libraries:"
+
+          $libraries = Get-ChildItem `
+            -Path (Join-Path $boost "lib") `
+            -Filter *.lib `
+            -File `
+            -ErrorAction SilentlyContinue
+
+          if ($libraries.Count -eq 0) {
+            Write-Host "No .lib files were found."
+          }
+          else {
+            $libraries |
+              Select-Object Name, Length |
+              Format-Table -AutoSize
+          }
+
       - name: Fix hard-coded Roblox paths
         shell: pwsh
         run: |
           $root = $env:GITHUB_WORKSPACE
-          $file = Join-Path $root "Library\boost\build_boost.bat"
+          $file = Join-Path `
+            $root `
+            "Library\boost\build_boost.bat"
 
           if (Test-Path $file) {
-            $text = Get-Content $file -Raw
+
+            Write-Host "Fixing hard-coded D:\Roblox\Source paths..."
+
+            $text = Get-Content `
+              $file `
+              -Raw
 
             $text = $text.Replace(
               "D:\Roblox\Source",
@@ -332,12 +436,21 @@ jobs:
               -Path $file `
               -Value $text `
               -NoNewline
+
+            Write-Host "Updated build_boost.bat."
+          }
+          else {
+            Write-Host "build_boost.bat not found. Continuing."
           }
 
       - name: Verify solution
         shell: pwsh
         run: |
-          if (-not (Test-Path "Roblox.sln")) {
+          $solution = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "Roblox.sln"
+
+          if (-not (Test-Path $solution)) {
             throw "Roblox.sln was not found."
           }
 
@@ -346,12 +459,20 @@ jobs:
       - name: Build Roblox solution
         shell: cmd
         run: |
+          echo ===== Building Roblox solution =====
+
           msbuild Roblox.sln ^
             /m ^
             /p:Configuration=Release ^
             /p:Platform=Win32 ^
             /p:PreferredToolArchitecture=x86 ^
             /verbosity:minimal
+
+          if errorlevel 1 (
+            echo.
+            echo ERROR: Roblox solution build failed.
+            exit /b 1
+          )
 
       - name: Find build outputs
         if: success()
@@ -370,6 +491,9 @@ jobs:
             Write-Host "No .exe or .dll files found."
           }
           else {
+            Write-Host ""
+            Write-Host "===== Build outputs ====="
+
             $files |
               Select-Object FullName, Length |
               Format-Table -AutoSize

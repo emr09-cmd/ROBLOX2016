@@ -40,62 +40,76 @@ jobs:
           cl
 
       # ============================================================
-      # Boost
+      # Repair incomplete Boost 1.74 source tree
       # ============================================================
 
-      - name: Check Boost source
+      - name: Check Boost version
         shell: pwsh
         run: |
-          $boost = Join-Path $env:GITHUB_WORKSPACE "Library\boost"
+          $versionFile = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "Library\boost\boost\version.hpp"
 
-          Write-Host "Boost directory:"
-          Write-Host $boost
-
-          if (-not (Test-Path $boost)) {
-            throw "Library\boost does not exist."
+          if (-not (Test-Path $versionFile)) {
+            throw "Boost version.hpp was not found."
           }
 
-          Write-Host ""
-          Write-Host "Checking Boost.Build..."
+          $text = Get-Content $versionFile -Raw
 
-          $buildSystem = Join-Path $boost "tools\build\src\build-system.jam"
+          Write-Host $text
 
-          if (Test-Path $buildSystem) {
-            Write-Host "build-system.jam already exists."
-          }
-          else {
-            Write-Host "build-system.jam is missing."
-            Write-Host "The repository Boost.Build tree is incomplete."
+          if ($text -notmatch "BOOST_VERSION 107400") {
+            throw "This workflow expects Boost 1.74.0."
           }
 
-      - name: Download Boost.Build 1.74
+          Write-Host "Boost 1.74.0 confirmed."
+
+      - name: Repair missing Boost files
         shell: pwsh
         run: |
-          $boost = Join-Path $env:GITHUB_WORKSPACE "Library\boost"
-          $buildSrc = Join-Path $boost "tools\build\src"
+          $root = $env:GITHUB_WORKSPACE
+          $boost = Join-Path $root "Library\boost"
 
-          $buildSystem = Join-Path $buildSrc "build-system.jam"
+          $requiredThreadFile = Join-Path `
+            $boost `
+            "libs\thread\src\win32\thread.cpp"
 
-          if (Test-Path $buildSystem) {
-            Write-Host "Boost.Build is already complete."
+          if (Test-Path $requiredThreadFile) {
+            Write-Host "Boost.Thread source files are already present."
             exit 0
           }
 
-          Write-Host "Downloading Boost 1.74.0 Boost.Build source..."
+          Write-Host "Boost source tree is incomplete."
+          Write-Host "Missing:"
+          Write-Host $requiredThreadFile
 
-          $temp = Join-Path $env:RUNNER_TEMP "boost-build-1.74"
+          $temp = Join-Path `
+            $env:RUNNER_TEMP `
+            "boost-1.74.0"
 
           if (Test-Path $temp) {
             Remove-Item $temp -Recurse -Force
           }
 
-          New-Item -ItemType Directory -Path $temp | Out-Null
+          New-Item `
+            -ItemType Directory `
+            -Path $temp `
+            -Force | Out-Null
 
-          $zip = Join-Path $temp "boost_1_74_0.zip"
+          $zip = Join-Path `
+            $temp `
+            "boost_1_74_0.zip"
+
+          Write-Host ""
+          Write-Host "Downloading official Boost 1.74.0 source..."
 
           Invoke-WebRequest `
             -Uri "https://archives.boost.io/release/1.74.0/source/boost_1_74_0.zip" `
             -OutFile $zip
+
+          if (-not (Test-Path $zip)) {
+            throw "Boost archive download failed."
+          }
 
           Write-Host "Extracting Boost 1.74.0..."
 
@@ -104,59 +118,139 @@ jobs:
             -DestinationPath $temp `
             -Force
 
-          $source = Join-Path $temp "boost_1_74_0\tools\build"
+          $official = Join-Path `
+            $temp `
+            "boost_1_74_0"
 
-          if (-not (Test-Path $source)) {
-            throw "Downloaded Boost.Build source was not found."
+          if (-not (Test-Path $official)) {
+            throw "Extracted Boost 1.74.0 directory was not found."
           }
 
-          Write-Host "Replacing incomplete tools\build..."
+          # --------------------------------------------------------
+          # Restore missing Boost.Build files.
+          # Existing repository files are preserved.
+          # --------------------------------------------------------
 
-          $destination = Join-Path $boost "tools\build"
+          $officialBuild = Join-Path `
+            $official `
+            "tools\build"
 
-          if (Test-Path $destination) {
-            Remove-Item $destination -Recurse -Force
-          }
+          $localBuild = Join-Path `
+            $boost `
+            "tools\build"
 
-          Copy-Item `
-            -Path $source `
-            -Destination $destination `
-            -Recurse `
-            -Force
+          Write-Host ""
+          Write-Host "Checking Boost.Build..."
 
           $buildSystem = Join-Path `
-            $destination `
+            $localBuild `
             "src\build-system.jam"
 
           if (-not (Test-Path $buildSystem)) {
-            throw "build-system.jam is still missing after replacement."
+            Write-Host "Restoring missing Boost.Build files..."
+
+            if (Test-Path $localBuild) {
+              Remove-Item `
+                $localBuild `
+                -Recurse `
+                -Force
+            }
+
+            Copy-Item `
+              -Path $officialBuild `
+              -Destination $localBuild `
+              -Recurse `
+              -Force
+          }
+
+          # --------------------------------------------------------
+          # Restore missing Boost library source files.
+          #
+          # Only files which do NOT already exist are copied.
+          # This keeps any repository-specific modifications.
+          # --------------------------------------------------------
+
+          $officialLibs = Join-Path `
+            $official `
+            "libs"
+
+          $localLibs = Join-Path `
+            $boost `
+            "libs"
+
+          Write-Host ""
+          Write-Host "Checking for missing Boost library files..."
+
+          $copied = 0
+
+          Get-ChildItem `
+            -Path $officialLibs `
+            -Recurse `
+            -File | ForEach-Object {
+
+              $relative = $_.FullName.Substring(
+                $officialLibs.Length
+              ).TrimStart(
+                '\'
+              )
+
+              $destination = Join-Path `
+                $localLibs `
+                $relative
+
+              if (-not (Test-Path $destination)) {
+                $destinationDirectory = Split-Path `
+                  $destination `
+                  -Parent
+
+                if (-not (Test-Path $destinationDirectory)) {
+                  New-Item `
+                    -ItemType Directory `
+                    -Path $destinationDirectory `
+                    -Force | Out-Null
+                }
+
+                Copy-Item `
+                  -Path $_.FullName `
+                  -Destination $destination `
+                  -Force
+
+                $copied++
+              }
           }
 
           Write-Host ""
-          Write-Host "Boost.Build fixed successfully:"
-          Write-Host $buildSystem
+          Write-Host "Missing Boost files restored: $copied"
 
-      - name: Verify Boost.Build
-        shell: pwsh
-        run: |
-          $boost = Join-Path $env:GITHUB_WORKSPACE "Library\boost"
+          # --------------------------------------------------------
+          # Final verification.
+          # --------------------------------------------------------
 
-          $required = @(
+          $checks = @(
             "tools\build\src\build-system.jam",
-            "tools\build\src\kernel\bootstrap.jam",
-            "tools\build\src\kernel\modules.jam",
-            "tools\build\boost-build.jam"
+            "libs\thread\src\win32\thread.cpp",
+            "libs\thread\src\win32\tss_dll.cpp",
+            "libs\thread\src\win32\tss_pe.cpp",
+            "libs\thread\src\win32\thread_primitives.cpp",
+            "libs\thread\src\future.cpp"
           )
 
-          foreach ($file in $required) {
-            $path = Join-Path $boost $file
+          Write-Host ""
+          Write-Host "Verifying required Boost.Thread files..."
+
+          foreach ($relative in $checks) {
+            $path = Join-Path $boost $relative
 
             if (-not (Test-Path $path)) {
-              throw "Missing Boost.Build file: $path"
+              throw "Required Boost file is still missing: $relative"
             }
 
-            Write-Host "OK: $file"
+            Write-Host "OK: $relative"
           }
+
+      # ============================================================
+      # Bootstrap Boost
+      # ============================================================
 
       - name: Bootstrap Boost
         shell: cmd
@@ -176,6 +270,10 @@ jobs:
           echo b2.exe created successfully.
           dir b2.exe
 
+      # ============================================================
+      # Build Boost
+      # ============================================================
+
       - name: Build Boost
         shell: cmd
         working-directory: Library\boost
@@ -188,6 +286,11 @@ jobs:
 
           if not exist "%BOOST_BUILD_PATH%\src\build-system.jam" (
             echo ERROR: build-system.jam is missing.
+            exit /b 1
+          )
+
+          if not exist "libs\thread\src\win32\thread.cpp" (
+            echo ERROR: Boost.Thread thread.cpp is missing.
             exit /b 1
           )
 
@@ -234,7 +337,7 @@ jobs:
           }
 
       # ============================================================
-      # Build Roblox
+      # Verify solution
       # ============================================================
 
       - name: Verify solution
@@ -245,6 +348,10 @@ jobs:
           }
 
           Write-Host "Roblox.sln found."
+
+      # ============================================================
+      # Build Roblox
+      # ============================================================
 
       - name: Build Roblox solution
         shell: cmd

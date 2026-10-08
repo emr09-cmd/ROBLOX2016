@@ -11,19 +11,11 @@ jobs:
     runs-on: windows-2022
 
     steps:
-      # ============================================================
-      # Checkout
-      # ============================================================
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 1
-
-      # ============================================================
-      # Visual Studio / MSBuild
-      # ============================================================
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -39,23 +31,16 @@ jobs:
           where cl
           cl
 
-      # ============================================================
-      # Repair incomplete Boost 1.74 source tree
-      # ============================================================
-
       - name: Check Boost version
         shell: pwsh
         run: |
-          $versionFile = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "Library\boost\boost\version.hpp"
+          $versionFile = Join-Path $env:GITHUB_WORKSPACE "Library\boost\boost\version.hpp"
 
           if (-not (Test-Path $versionFile)) {
             throw "Boost version.hpp was not found."
           }
 
           $text = Get-Content $versionFile -Raw
-
           Write-Host $text
 
           if ($text -notmatch "BOOST_VERSION 107400") {
@@ -100,7 +85,6 @@ jobs:
             $temp `
             "boost_1_74_0.zip"
 
-          Write-Host ""
           Write-Host "Downloading official Boost 1.74.0 source..."
 
           Invoke-WebRequest `
@@ -126,11 +110,7 @@ jobs:
             throw "Extracted Boost 1.74.0 directory was not found."
           }
 
-          # --------------------------------------------------------
           # Restore missing Boost.Build files.
-          # Existing repository files are preserved.
-          # --------------------------------------------------------
-
           $officialBuild = Join-Path `
             $official `
             "tools\build"
@@ -138,9 +118,6 @@ jobs:
           $localBuild = Join-Path `
             $boost `
             "tools\build"
-
-          Write-Host ""
-          Write-Host "Checking Boost.Build..."
 
           $buildSystem = Join-Path `
             $localBuild `
@@ -163,13 +140,7 @@ jobs:
               -Force
           }
 
-          # --------------------------------------------------------
-          # Restore missing Boost library source files.
-          #
-          # Only files which do NOT already exist are copied.
-          # This keeps any repository-specific modifications.
-          # --------------------------------------------------------
-
+          # Restore any missing files from Boost's official 1.74 source.
           $officialLibs = Join-Path `
             $official `
             "libs"
@@ -178,7 +149,6 @@ jobs:
             $boost `
             "libs"
 
-          Write-Host ""
           Write-Host "Checking for missing Boost library files..."
 
           $copied = 0
@@ -186,45 +156,40 @@ jobs:
           Get-ChildItem `
             -Path $officialLibs `
             -Recurse `
-            -File | ForEach-Object {
+            -File |
+          ForEach-Object {
 
-              $relative = $_.FullName.Substring(
-                $officialLibs.Length
-              ).TrimStart(
-                '\'
-              )
+            $relative = $_.FullName.Substring(
+              $officialLibs.Length
+            ).TrimStart('\')
 
-              $destination = Join-Path `
-                $localLibs `
-                $relative
+            $destination = Join-Path `
+              $localLibs `
+              $relative
 
-              if (-not (Test-Path $destination)) {
-                $destinationDirectory = Split-Path `
-                  $destination `
-                  -Parent
+            if (-not (Test-Path $destination)) {
 
-                if (-not (Test-Path $destinationDirectory)) {
-                  New-Item `
-                    -ItemType Directory `
-                    -Path $destinationDirectory `
-                    -Force | Out-Null
-                }
+              $destinationDirectory = Split-Path `
+                $destination `
+                -Parent
 
-                Copy-Item `
-                  -Path $_.FullName `
-                  -Destination $destination `
-                  -Force
-
-                $copied++
+              if (-not (Test-Path $destinationDirectory)) {
+                New-Item `
+                  -ItemType Directory `
+                  -Path $destinationDirectory `
+                  -Force | Out-Null
               }
+
+              Copy-Item `
+                -Path $_.FullName `
+                -Destination $destination `
+                -Force
+
+              $copied++
+            }
           }
 
-          Write-Host ""
           Write-Host "Missing Boost files restored: $copied"
-
-          # --------------------------------------------------------
-          # Final verification.
-          # --------------------------------------------------------
 
           $checks = @(
             "tools\build\src\build-system.jam",
@@ -235,11 +200,13 @@ jobs:
             "libs\thread\src\future.cpp"
           )
 
-          Write-Host ""
           Write-Host "Verifying required Boost.Thread files..."
 
           foreach ($relative in $checks) {
-            $path = Join-Path $boost $relative
+
+            $path = Join-Path `
+              $boost `
+              $relative
 
             if (-not (Test-Path $path)) {
               throw "Required Boost file is still missing: $relative"
@@ -248,31 +215,62 @@ jobs:
             Write-Host "OK: $relative"
           }
 
-      # ============================================================
-      # Bootstrap Boost
-      # ============================================================
-
-      - name: Bootstrap Boost
+      - name: Configure Boost for GitHub Actions MSVC
         shell: cmd
         working-directory: Library\boost
         run: |
-          if exist b2.exe del /q b2.exe
+          echo Removing stale Boost.Build configuration...
+
+          if exist project-config.jam del /q project-config.jam
+          if exist user-config.jam del /q user-config.jam
+
+          echo Removing stale Boost build state...
+
+          if exist bin.v2 rmdir /s /q bin.v2
+
+          echo Bootstrapping Boost...
 
           call bootstrap.bat msvc
 
           if not exist b2.exe (
             echo ERROR: b2.exe was not created.
-            dir /a
             exit /b 1
           )
 
           echo.
-          echo b2.exe created successfully.
-          dir b2.exe
+          echo Creating explicit project-config.jam...
 
-      # ============================================================
-      # Build Boost
-      # ============================================================
+          > project-config.jam echo import option ;
+          >> project-config.jam echo using msvc : 14.2 : cl.exe ;
+          >> project-config.jam echo option.set keep-going : false ;
+
+          echo.
+          echo project-config.jam:
+          type project-config.jam
+
+          echo.
+          echo Compiler:
+          where cl
+          cl
+
+          echo.
+          echo B2:
+          b2.exe --version
+
+      - name: Verify Boost compiler configuration
+        shell: cmd
+        working-directory: Library\boost
+        run: |
+          echo ===== Boost configuration =====
+          type project-config.jam
+
+          echo.
+          echo ===== Running B2 configuration diagnostics =====
+
+          .\b2.exe ^
+            --debug-configuration ^
+            --toolset=msvc-14.2 ^
+            --version
 
       - name: Build Boost
         shell: cmd
@@ -282,7 +280,6 @@ jobs:
 
           echo BOOST_BUILD_PATH=%BOOST_BUILD_PATH%
           echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
-          echo.
 
           if not exist "%BOOST_BUILD_PATH%\src\build-system.jam" (
             echo ERROR: build-system.jam is missing.
@@ -294,10 +291,14 @@ jobs:
             exit /b 1
           )
 
+          echo.
+          echo Starting Boost build...
+          echo.
+
           .\b2.exe stage ^
             -a ^
             --reconfigure ^
-            --toolset=msvc ^
+            --toolset=msvc-14.2 ^
             --variant=release ^
             address-model=32 ^
             architecture=x86 ^
@@ -307,22 +308,19 @@ jobs:
             "--libdir=%GITHUB_WORKSPACE%\Library\boost\lib" ^
             "--includedir=%GITHUB_WORKSPACE%\Library\boost\include"
 
-      # ============================================================
-      # Fix repository-specific paths
-      # ============================================================
+          if errorlevel 1 (
+            echo.
+            echo ERROR: Boost build failed.
+            exit /b 1
+          )
 
       - name: Fix hard-coded Roblox paths
         shell: pwsh
         run: |
           $root = $env:GITHUB_WORKSPACE
-
-          $file = Join-Path `
-            $root `
-            "Library\boost\build_boost.bat"
+          $file = Join-Path $root "Library\boost\build_boost.bat"
 
           if (Test-Path $file) {
-            Write-Host "Patching $file"
-
             $text = Get-Content $file -Raw
 
             $text = $text.Replace(
@@ -336,10 +334,6 @@ jobs:
               -NoNewline
           }
 
-      # ============================================================
-      # Verify solution
-      # ============================================================
-
       - name: Verify solution
         shell: pwsh
         run: |
@@ -348,10 +342,6 @@ jobs:
           }
 
           Write-Host "Roblox.sln found."
-
-      # ============================================================
-      # Build Roblox
-      # ============================================================
 
       - name: Build Roblox solution
         shell: cmd
@@ -362,10 +352,6 @@ jobs:
             /p:Platform=Win32 ^
             /p:PreferredToolArchitecture=x86 ^
             /verbosity:minimal
-
-      # ============================================================
-      # Find outputs
-      # ============================================================
 
       - name: Find build outputs
         if: success()
@@ -388,10 +374,6 @@ jobs:
               Select-Object FullName, Length |
               Format-Table -AutoSize
           }
-
-      # ============================================================
-      # Upload artifact
-      # ============================================================
 
       - name: Upload build artifacts
         if: success()

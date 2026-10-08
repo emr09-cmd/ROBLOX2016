@@ -19,7 +19,7 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Setup Visual Studio environment
+      - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x86
@@ -30,42 +30,54 @@ jobs:
           where cl
           cl
 
-      - name: Bootstrap Boost.Build with MSVC
+      - name: Bootstrap Boost
         shell: cmd
         working-directory: Library\boost
         run: |
-          b2.exe --version
-          if exist b2.exe del /f /q b2.exe
-          if exist b2.obj del /f /q b2.obj
-          if exist bjam.exe del /f /q bjam.exe
-
           call bootstrap.bat msvc
 
       - name: Check Boost.Build
         shell: cmd
         working-directory: Library\boost
         run: |
-          b2 --version
+          if not exist b2.exe (
+            echo b2.exe was not created
+            dir
+            exit /b 1
+          )
 
-      - name: Build Boost libraries
+          b2.exe --version
+
+      - name: Build Boost
         shell: cmd
         working-directory: Library\boost
         run: |
-          b2 ^
+          b2.exe ^
             -j2 ^
             toolset=msvc ^
             variant=release ^
             link=static ^
             runtime-link=static ^
-            architecture=x86 ^
             address-model=32 ^
-            --build-dir=build ^
+            architecture=x86 ^
             stage
 
-      - name: Patch old Visual Studio toolset
+      - name: Verify Boost
         shell: pwsh
         run: |
-          Write-Host "Replacing legacy v140_xp toolset with v143..."
+          $boost = Join-Path $env:GITHUB_WORKSPACE "Library\boost\stage\lib"
+
+          if (-not (Test-Path $boost)) {
+            throw "Boost stage directory was not created."
+          }
+
+          Write-Host "Boost libraries:"
+          Get-ChildItem $boost
+
+      - name: Patch old Visual Studio projects
+        shell: pwsh
+        run: |
+          Write-Host "Patching v140_xp -> v143"
 
           Get-ChildItem `
             -Path $env:GITHUB_WORKSPACE `
@@ -73,17 +85,19 @@ jobs:
             -Recurse `
             -File |
             ForEach-Object {
+
               $file = $_.FullName
               $text = Get-Content $file -Raw
 
-              if ($text -match 'v140_xp') {
-                $text = $text -replace 'v140_xp', 'v143'
+              if ($text.Contains("v140_xp")) {
+                $text = $text.Replace("v140_xp", "v143")
                 Set-Content -Path $file -Value $text -NoNewline
-                Write-Host "Patched $file"
+
+                Write-Host "Patched: $file"
               }
             }
 
-      - name: Build WindowsClient
+      - name: Build Roblox solution
         shell: cmd
         run: |
           msbuild Roblox.sln ^
@@ -93,19 +107,25 @@ jobs:
             /p:PlatformToolset=v143 ^
             /verbosity:minimal
 
-      - name: Search for executables
+      - name: Find executables
         shell: pwsh
         run: |
-          Write-Host "========== EXE FILES =========="
+          Write-Host "========== EXECUTABLES =========="
 
-          Get-ChildItem `
+          $files = Get-ChildItem `
             -Path $env:GITHUB_WORKSPACE `
             -Filter *.exe `
             -Recurse `
-            -ErrorAction SilentlyContinue |
+            -ErrorAction SilentlyContinue
+
+          if (-not $files) {
+            throw "No EXE files were produced."
+          }
+
+          $files |
             Select-Object FullName, Length
 
-      - name: Package executables
+      - name: Package build
         shell: pwsh
         run: |
           $artifact = "$env:GITHUB_WORKSPACE\artifact"
@@ -121,10 +141,6 @@ jobs:
             -Recurse `
             -ErrorAction SilentlyContinue
 
-          if (-not $files) {
-            throw "The build completed without producing an EXE."
-          }
-
           foreach ($file in $files) {
             Copy-Item `
               $file.FullName `
@@ -132,7 +148,7 @@ jobs:
               -Force
           }
 
-          Write-Host "========== ARTIFACT =========="
+          Write-Host "========== BUILD ARTIFACT =========="
 
           Get-ChildItem $artifact |
             Select-Object Name, Length

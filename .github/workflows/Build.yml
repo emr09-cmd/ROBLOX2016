@@ -1,0 +1,158 @@
+```yaml
+name: Build ROBLOX 2016
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    name: Build Windows Client
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Show runner information
+        shell: pwsh
+        run: |
+          Write-Host "Windows:"
+          Get-CimInstance Win32_OperatingSystem |
+            Select-Object Caption, Version
+
+          Write-Host "`nVisual Studio installations:"
+          & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -products * `
+            -format table
+
+      - name: Locate MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Locate Visual Studio
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+            -latest `
+            -products * `
+            -requires Microsoft.Component.MSBuild `
+            -property installationPath
+
+          if (-not $vs) {
+            throw "Visual Studio installation was not found."
+          }
+
+          "VS_PATH=$vs" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+          Write-Host "Visual Studio: $vs"
+
+      - name: Check v140 toolset
+        shell: pwsh
+        run: |
+          Write-Host "Searching for v140..."
+
+          $paths = @(
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio",
+            "${env:ProgramFiles}\Microsoft Visual Studio"
+          )
+
+          $found = Get-ChildItem `
+            -Path $paths `
+            -Filter "Microsoft.VC140.CRT" `
+            -Recurse `
+            -ErrorAction SilentlyContinue
+
+          if ($found) {
+            Write-Host "v140 components found."
+            $found | Select-Object FullName
+          }
+          else {
+            Write-Warning "v140 was not found on this runner."
+            Write-Warning "The legacy v140_xp toolset may need to be installed."
+          }
+
+      - name: Bootstrap Boost
+        shell: cmd
+        working-directory: Library\boost
+        run: |
+          call bootstrap.bat
+
+      - name: Build Boost
+        shell: cmd
+        working-directory: Library\boost
+        run: |
+          b2 stage ^
+            -a ^
+            --reconfigure ^
+            --toolset=msvc-14.0 ^
+            --variant=release ^
+            --prefix=%GITHUB_WORKSPACE%\Library\boost ^
+            --libdir=%GITHUB_WORKSPACE%\Library\boost\lib ^
+            --includedir=%GITHUB_WORKSPACE%\Library\boost\include
+
+      - name: Verify Boost
+        shell: pwsh
+        run: |
+          Write-Host "Boost libraries:"
+          Get-ChildItem `
+            "$env:GITHUB_WORKSPACE\Library\boost\stage\lib" `
+            -ErrorAction SilentlyContinue |
+            Select-Object Name
+
+      - name: Build Windows Client
+        shell: cmd
+        run: |
+          msbuild Roblox.sln ^
+            /m ^
+            /p:Configuration=Release ^
+            /p:Platform=Win32 ^
+            /p:PlatformToolset=v140_xp ^
+            /p:WindowsTargetPlatformVersion=10.0 ^
+            /verbosity:minimal
+
+      - name: Find executables
+        shell: pwsh
+        run: |
+          Write-Host "Executables produced by the build:"
+
+          Get-ChildItem `
+            -Path "$env:GITHUB_WORKSPACE" `
+            -Filter "*.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object FullName, Length
+
+      - name: Package client
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\artifact" | Out-Null
+
+          $exe = Get-ChildItem `
+            -Path "$env:GITHUB_WORKSPACE" `
+            -Filter "RobloxPlayerBetaRaw.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            Write-Error "RobloxPlayerBetaRaw.exe was not produced."
+            exit 1
+          }
+
+          Copy-Item $exe.FullName `
+            "$env:GITHUB_WORKSPACE\artifact\RobloxPlayerBetaRaw.exe"
+
+          Write-Host "Packaged:"
+          Get-ChildItem "$env:GITHUB_WORKSPACE\artifact"
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ROBLOX2016-WindowsClient
+          path: artifact/
+          if-no-files-found: error
+```

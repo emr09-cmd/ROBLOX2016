@@ -6,10 +6,12 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write   # needed to create releases
+
 jobs:
   build:
     runs-on: windows-2022
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,22 +37,15 @@ jobs:
       - name: Check Boost version
         shell: pwsh
         run: |
-          $versionFile = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "Library\boost\boost\version.hpp"
-
+          $versionFile = Join-Path $env:GITHUB_WORKSPACE "Library\boost\boost\version.hpp"
           if (-not (Test-Path $versionFile)) {
             throw "Boost version.hpp was not found."
           }
-
           $text = Get-Content $versionFile -Raw
-
           Write-Host $text
-
           if ($text -notmatch "BOOST_VERSION 107400") {
             throw "This workflow expects Boost 1.74.0."
           }
-
           Write-Host "Boost 1.74.0 confirmed."
 
       - name: Repair missing Boost files
@@ -58,156 +53,61 @@ jobs:
         run: |
           $root = $env:GITHUB_WORKSPACE
           $boost = Join-Path $root "Library\boost"
-
-          $requiredThreadFile = Join-Path `
-            $boost `
-            "libs\thread\src\win32\thread.cpp"
-
+          $requiredThreadFile = Join-Path $boost "libs\thread\src\win32\thread.cpp"
           if (Test-Path $requiredThreadFile) {
             Write-Host "Boost.Thread source files are already present."
             exit 0
           }
-
           Write-Host "Boost source tree is incomplete."
           Write-Host "Missing:"
           Write-Host $requiredThreadFile
-
-          $temp = Join-Path `
-            $env:RUNNER_TEMP `
-            "boost-1.74.0"
-
+          $temp = Join-Path $env:RUNNER_TEMP "boost-1.74.0"
           if (Test-Path $temp) {
-            Remove-Item `
-              $temp `
-              -Recurse `
-              -Force
+            Remove-Item $temp -Recurse -Force
           }
-
-          New-Item `
-            -ItemType Directory `
-            -Path $temp `
-            -Force | Out-Null
-
-          $zip = Join-Path `
-            $temp `
-            "boost_1_74_0.zip"
-
+          New-Item -ItemType Directory -Path $temp -Force | Out-Null
+          $zip = Join-Path $temp "boost_1_74_0.zip"
           Write-Host "Downloading official Boost 1.74.0 source..."
-
-          Invoke-WebRequest `
-            -Uri "https://archives.boost.io/release/1.74.0/source/boost_1_74_0.zip" `
-            -OutFile $zip
-
+          Invoke-WebRequest -Uri "https://archives.boost.io/release/1.74.0/source/boost_1_74_0.zip" -OutFile $zip
           if (-not (Test-Path $zip)) {
             throw "Boost archive download failed."
           }
-
           Write-Host "Extracting Boost 1.74.0..."
-
-          Expand-Archive `
-            -Path $zip `
-            -DestinationPath $temp `
-            -Force
-
-          $official = Join-Path `
-            $temp `
-            "boost_1_74_0"
-
+          Expand-Archive -Path $zip -DestinationPath $temp -Force
+          $official = Join-Path $temp "boost_1_74_0"
           if (-not (Test-Path $official)) {
             throw "Extracted Boost 1.74.0 directory was not found."
           }
-
-          # ------------------------------------------------------------
           # Restore Boost.Build
-          # ------------------------------------------------------------
-
-          $officialBuild = Join-Path `
-            $official `
-            "tools\build"
-
-          $localBuild = Join-Path `
-            $boost `
-            "tools\build"
-
-          $buildSystem = Join-Path `
-            $localBuild `
-            "src\build-system.jam"
-
+          $officialBuild = Join-Path $official "tools\build"
+          $localBuild = Join-Path $boost "tools\build"
+          $buildSystem = Join-Path $localBuild "src\build-system.jam"
           if (-not (Test-Path $buildSystem)) {
             Write-Host "Restoring missing Boost.Build files..."
-
             if (Test-Path $localBuild) {
-              Remove-Item `
-                $localBuild `
-                -Recurse `
-                -Force
+              Remove-Item $localBuild -Recurse -Force
             }
-
-            Copy-Item `
-              -Path $officialBuild `
-              -Destination $localBuild `
-              -Recurse `
-              -Force
+            Copy-Item -Path $officialBuild -Destination $localBuild -Recurse -Force
           }
-
-          # ------------------------------------------------------------
           # Restore missing Boost library files
-          # ------------------------------------------------------------
-
-          $officialLibs = Join-Path `
-            $official `
-            "libs"
-
-          $localLibs = Join-Path `
-            $boost `
-            "libs"
-
+          $officialLibs = Join-Path $official "libs"
+          $localLibs = Join-Path $boost "libs"
           Write-Host "Checking for missing Boost library files..."
-
           $copied = 0
-
-          Get-ChildItem `
-            -Path $officialLibs `
-            -Recurse `
-            -File |
-          ForEach-Object {
-
-            $relative = $_.FullName.Substring(
-              $officialLibs.Length
-            ).TrimStart('\')
-
-            $destination = Join-Path `
-              $localLibs `
-              $relative
-
+          Get-ChildItem -Path $officialLibs -Recurse -File | ForEach-Object {
+            $relative = $_.FullName.Substring($officialLibs.Length).TrimStart('\')
+            $destination = Join-Path $localLibs $relative
             if (-not (Test-Path $destination)) {
-
-              $destinationDirectory = Split-Path `
-                $destination `
-                -Parent
-
+              $destinationDirectory = Split-Path $destination -Parent
               if (-not (Test-Path $destinationDirectory)) {
-                New-Item `
-                  -ItemType Directory `
-                  -Path $destinationDirectory `
-                  -Force | Out-Null
+                New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
               }
-
-              Copy-Item `
-                -Path $_.FullName `
-                -Destination $destination `
-                -Force
-
+              Copy-Item -Path $_.FullName -Destination $destination -Force
               $copied++
             }
           }
-
           Write-Host "Missing Boost files restored: $copied"
-
-          # ------------------------------------------------------------
           # Verify critical files
-          # ------------------------------------------------------------
-
           $checks = @(
             "tools\build\src\build-system.jam",
             "libs\thread\src\win32\thread.cpp",
@@ -216,209 +116,74 @@ jobs:
             "libs\thread\src\win32\thread_primitives.cpp",
             "libs\thread\src\future.cpp"
           )
-
           Write-Host "Verifying required Boost.Thread files..."
-
           foreach ($relative in $checks) {
-
-            $path = Join-Path `
-              $boost `
-              $relative
-
+            $path = Join-Path $boost $relative
             if (-not (Test-Path $path)) {
               throw "Required Boost file is still missing: $relative"
             }
-
             Write-Host "OK: $relative"
           }
 
       - name: Patch Boost 1.74 MSVC toolset
         shell: pwsh
         run: |
-          $boost = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "Library\boost"
-
-          $msvcJam = Join-Path `
-            $boost `
-            "tools\build\src\tools\msvc.jam"
-
+          $boost = Join-Path $env:GITHUB_WORKSPACE "Library\boost"
+          $msvcJam = Join-Path $boost "tools\build\src\tools\msvc.jam"
           if (-not (Test-Path $msvcJam)) {
             throw "Boost MSVC toolset file was not found: $msvcJam"
           }
-
           Write-Host "Boost MSVC toolset file:"
           Write-Host $msvcJam
-
-          $text = Get-Content `
-            $msvcJam `
-            -Raw
-
+          $text = Get-Content $msvcJam -Raw
           # Boost 1.74 predates VS2022.
-          #
-          # We are using VS2022's x86 compiler but exposing it to
-          # Boost.Build as the compatible MSVC 14.2 toolset.
-          #
-          # Make sure Boost does not reject the newer compiler version.
-
-          $text = $text.Replace(
-            "14.3",
-            "14.2"
-          )
-
-          $text = $text.Replace(
-            "14.4",
-            "14.2"
-          )
-
-          $text = $text.Replace(
-            "14.5",
-            "14.2"
-          )
-
-          Set-Content `
-            -Path $msvcJam `
-            -Value $text `
-            -NoNewline
-
+          # Force newer compiler versions to be treated as 14.2
+          $text = $text.Replace("14.3", "14.2")
+          $text = $text.Replace("14.4", "14.2")
+          $text = $text.Replace("14.5", "14.2")
+          Set-Content -Path $msvcJam -Value $text -NoNewline
           Write-Host ""
           Write-Host "Boost MSVC toolset patched."
-
-          Write-Host ""
-          Write-Host "Checking MSVC toolset references..."
-
-          Select-String `
-            -Path $msvcJam `
-            -Pattern "14\.2|14\.3|14\.4|14\.5" `
-            -AllMatches |
-            ForEach-Object {
-              Write-Host $_.Line
-            }
 
       - name: Configure Boost for GitHub Actions MSVC
         shell: cmd
         working-directory: Library\boost
         run: |
           echo Removing stale Boost.Build configuration...
-
           if exist project-config.jam del /q project-config.jam
           if exist user-config.jam del /q user-config.jam
-
+          if exist site-config.jam del /q site-config.jam
           echo Removing stale Boost build state...
-
           if exist bin.v2 rmdir /s /q bin.v2
-
-          echo Removing old Boost stage output...
-
           if exist stage rmdir /s /q stage
 
           echo Bootstrapping Boost...
-
           call bootstrap.bat msvc
-
           if not exist b2.exe (
             echo ERROR: b2.exe was not created.
             exit /b 1
           )
 
-          echo.
           echo Creating explicit project-config.jam...
+          (
+            echo import option ;
+            echo using msvc : 14.2 : cl.exe ;
+            echo option.set keep-going : false ;
+          ) > project-config.jam
 
-          > project-config.jam echo import option ;
-          >> project-config.jam echo using msvc : 14.2 : cl.exe ;
-          >> project-config.jam echo option.set keep-going : false ;
-
-          echo.
           echo ===== project-config.jam =====
           type project-config.jam
-
-          echo.
           echo ===== Compiler =====
           where cl
           cl
 
-          echo.
-          echo ===== B2 executable =====
-          dir b2.exe
-
-      - name: Diagnose Boost compiler configuration
-        shell: cmd
-        working-directory: Library\boost
-        run: |
-          echo ===== Boost project configuration =====
-          type project-config.jam
-
-          echo.
-          echo ===== Boost configuration files =====
-
-          if exist site-config.jam (
-            echo ----- site-config.jam -----
-            type site-config.jam
-          ) else (
-            echo No site-config.jam
-          )
-
-          if exist user-config.jam (
-            echo ----- user-config.jam -----
-            type user-config.jam
-          ) else (
-            echo No user-config.jam
-          )
-
-          echo.
-          echo ===== Environment =====
-          echo BOOST_BUILD_PATH=%BOOST_BUILD_PATH%
-          echo BOOST_ROOT=%BOOST_ROOT%
-
-          echo.
-          echo ===== B2 32-bit MSVC configuration diagnostic =====
-
-          .\b2.exe ^
-            --debug-configuration ^
-            --toolset=msvc-14.2 ^
-            --variant=release ^
-            address-model=32 ^
-            architecture=x86 ^
-            threading=multi ^
-            -n ^
-            stage
-
-          if errorlevel 1 (
-            echo.
-            echo ERROR: B2 32-bit configuration diagnostic failed.
-            exit /b 1
-          )
-
-          echo.
-          echo B2 32-bit configuration diagnostic succeeded.
-
-      - name: Build Boost
+      - name: Build Boost (32-bit, required libraries only)
         shell: cmd
         working-directory: Library\boost
         run: |
           set "BOOST_BUILD_PATH=%GITHUB_WORKSPACE%\Library\boost\tools\build"
 
-          echo BOOST_BUILD_PATH=%BOOST_BUILD_PATH%
-          echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
-
-          if not exist "%BOOST_BUILD_PATH%\src\build-system.jam" (
-            echo ERROR: build-system.jam is missing.
-            exit /b 1
-          )
-
-          if not exist "libs\thread\src\win32\thread.cpp" (
-            echo ERROR: Boost.Thread thread.cpp is missing.
-            exit /b 1
-          )
-
-          echo.
-          echo ===== Compiler =====
-          where cl
-          cl
-
-          echo.
-          echo ===== Boost Build: 32-bit x86 =====
-          echo.
+          echo ===== Boost Build: 32-bit x86 (required libs) =====
 
           .\b2.exe stage ^
             -a ^
@@ -428,75 +193,65 @@ jobs:
             address-model=32 ^
             architecture=x86 ^
             threading=multi ^
+            link=static ^
+            runtime-link=shared ^
+            --layout=versioned ^
+            --with-system ^
+            --with-filesystem ^
+            --with-thread ^
+            --with-chrono ^
+            --with-date_time ^
+            --with-regex ^
+            --with-atomic ^
+            --with-container ^
+            --with-exception ^
+            --with-program_options ^
+            --with-random ^
+            --with-serialization ^
+            --with-iostreams ^
+            cxxflags="/Zc:__cplusplus /std:c++14" ^
+            define=BOOST_USE_WINDOWS_H ^
+            define=BOOST_ALL_NO_LIB ^
             "-sZLIB_SOURCE=%GITHUB_WORKSPACE%\Library\zlib\include\zlib" ^
             "-sZLIB_BINARY=%GITHUB_WORKSPACE%\Library\zlib\lib\release" ^
             "--prefix=%GITHUB_WORKSPACE%\Library\boost" ^
             "--libdir=%GITHUB_WORKSPACE%\Library\boost\lib" ^
-            "--includedir=%GITHUB_WORKSPACE%\Library\boost\include"
+            "--includedir=%GITHUB_WORKSPACE%\Library\boost\include" ^
+            -j%NUMBER_OF_PROCESSORS%
 
           if errorlevel 1 (
             echo.
             echo ERROR: Boost 32-bit build failed.
             exit /b 1
           )
-
           echo.
           echo Boost 32-bit build completed successfully.
 
       - name: Verify Boost output
         shell: pwsh
         run: |
-          $boost = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "Library\boost"
-
+          $boost = Join-Path $env:GITHUB_WORKSPACE "Library\boost"
           Write-Host "Checking Boost output directories..."
-
-          $directories = @(
-            "lib",
-            "include",
-            "stage\lib"
-          )
-
+          $directories = @("lib", "include", "stage\lib")
           foreach ($relative in $directories) {
-
-            $path = Join-Path `
-              $boost `
-              $relative
-
+            $path = Join-Path $boost $relative
             if (Test-Path $path) {
               Write-Host "OK: $relative"
-            }
-            else {
+            } else {
               Write-Host "WARNING: $relative was not created."
             }
           }
-
           Write-Host ""
           Write-Host "Boost libraries:"
-
-          $libDirectory = Join-Path `
-            $boost `
-            "stage\lib"
-
+          $libDirectory = Join-Path $boost "stage\lib"
           if (Test-Path $libDirectory) {
-
-            $libraries = Get-ChildItem `
-              -Path $libDirectory `
-              -Filter *.lib `
-              -File `
-              -ErrorAction SilentlyContinue
-
+            $libraries = Get-ChildItem -Path $libDirectory -Filter *.lib -File -ErrorAction SilentlyContinue
             if ($libraries.Count -eq 0) {
               Write-Host "No .lib files were found."
+            } else {
+              $libraries | Select-Object Name, Length | Format-Table -AutoSize
             }
-            else {
-              $libraries |
-                Select-Object Name, Length |
-                Format-Table -AutoSize
-            }
-          }
-          else {
+          } else {
             Write-Host "Boost stage\lib directory does not exist."
           }
 
@@ -504,100 +259,88 @@ jobs:
         shell: pwsh
         run: |
           $root = $env:GITHUB_WORKSPACE
-
-          $file = Join-Path `
-            $root `
-            "Library\boost\build_boost.bat"
-
+          $file = Join-Path $root "Library\boost\build_boost.bat"
           if (Test-Path $file) {
-
             Write-Host "Fixing hard-coded D:\Roblox\Source paths..."
-
-            $text = Get-Content `
-              $file `
-              -Raw
-
-            $text = $text.Replace(
-              "D:\Roblox\Source",
-              $root
-            )
-
-            Set-Content `
-              -Path $file `
-              -Value $text `
-              -NoNewline
-
+            $text = Get-Content $file -Raw
+            $text = $text.Replace("D:\Roblox\Source", $root)
+            Set-Content -Path $file -Value $text -NoNewline
             Write-Host "Updated build_boost.bat."
-          }
-          else {
+          } else {
             Write-Host "build_boost.bat not found. Continuing."
           }
 
       - name: Verify solution
         shell: pwsh
         run: |
-          $solution = Join-Path `
-            $env:GITHUB_WORKSPACE `
-            "Roblox.sln"
-
+          $solution = Join-Path $env:GITHUB_WORKSPACE "Roblox.sln"
           if (-not (Test-Path $solution)) {
             throw "Roblox.sln was not found."
           }
-
           Write-Host "Roblox.sln found."
 
       - name: Build Roblox solution
         shell: cmd
         run: |
           echo ===== Building Roblox solution =====
-
           msbuild Roblox.sln ^
             /m ^
             /p:Configuration=Release ^
             /p:Platform=Win32 ^
             /p:PreferredToolArchitecture=x86 ^
             /verbosity:minimal
-
           if errorlevel 1 (
             echo.
             echo ERROR: Roblox solution build failed.
             exit /b 1
           )
-
           echo.
           echo Roblox solution build completed successfully.
 
-      - name: Find build outputs
+      - name: Collect build outputs
         if: success()
         shell: pwsh
         run: |
-          Write-Host "Searching for executables and DLLs..."
+          Write-Host "Collecting build outputs..."
+          $outDir = Join-Path $env:GITHUB_WORKSPACE "release-files"
+          New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 
-          $files = Get-ChildItem `
-            -Path $env:GITHUB_WORKSPACE `
-            -Recurse `
-            -File `
-            -Include *.exe,*.dll `
-            -ErrorAction SilentlyContinue
+          # Copy all exe / dll / pdb
+          Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Include *.exe,*.dll,*.pdb -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\.git\\' } |
+            ForEach-Object {
+              $dest = Join-Path $outDir $_.Name
+              Copy-Item $_.FullName $dest -Force
+              Write-Host "  + $($_.Name)"
+            }
 
-          if ($files.Count -eq 0) {
-            Write-Host "No .exe or .dll files found."
+          # Also copy Boost libs (optional but useful)
+          $boostLibs = Join-Path $env:GITHUB_WORKSPACE "Library\boost\stage\lib"
+          if (Test-Path $boostLibs) {
+            Get-ChildItem -Path $boostLibs -Filter *.lib -File -ErrorAction SilentlyContinue |
+              ForEach-Object {
+                $dest = Join-Path $outDir $_.Name
+                Copy-Item $_.FullName $dest -Force
+                Write-Host "  + $($_.Name) (Boost)"
+              }
           }
-          else {
-            Write-Host ""
-            Write-Host "===== Build outputs ====="
 
-            $files |
-              Select-Object FullName, Length |
-              Format-Table -AutoSize
-          }
+          Write-Host ""
+          Write-Host "Files prepared for release:"
+          Get-ChildItem $outDir | Select-Object Name, Length | Format-Table -AutoSize
 
-      - name: Upload build artifacts
+      - name: Create GitHub Release
         if: success()
-        uses: actions/upload-artifact@v4
+        uses: softprops/action-gh-release@v2
         with:
-          name: ROBLOX2016-Windows
-          path: |
-            **/*.exe
-            **/*.dll
-          if-no-files-found: warn
+          tag_name: build-${{ github.run_number }}
+          name: ROBLOX2016 Build ${{ github.run_number }}
+          body: |
+            Automated build of ROBLOX2016 (32-bit / Win32 / Release)
+            - Commit: ${{ github.sha }}
+            - Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          files: release-files/*
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

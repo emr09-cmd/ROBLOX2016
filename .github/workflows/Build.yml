@@ -245,6 +245,10 @@ jobs:
 
           if exist bin.v2 rmdir /s /q bin.v2
 
+          echo Removing old Boost stage output...
+
+          if exist stage rmdir /s /q stage
+
           echo Bootstrapping Boost...
 
           call bootstrap.bat msvc
@@ -304,19 +308,26 @@ jobs:
           echo BOOST_ROOT=%BOOST_ROOT%
 
           echo.
-          echo ===== B2 configuration diagnostic =====
+          echo ===== B2 32-bit MSVC configuration diagnostic =====
 
           .\b2.exe ^
             --debug-configuration ^
             --toolset=msvc-14.2 ^
+            --variant=release ^
+            address-model=32 ^
+            architecture=x86 ^
+            threading=multi ^
             -n ^
             stage
 
           if errorlevel 1 (
             echo.
-            echo B2 configuration diagnostic returned an error.
+            echo ERROR: B2 32-bit configuration diagnostic failed.
             exit /b 1
           )
+
+          echo.
+          echo B2 32-bit configuration diagnostic succeeded.
 
       - name: Build Boost
         shell: cmd
@@ -343,7 +354,7 @@ jobs:
           cl
 
           echo.
-          echo ===== Boost Build =====
+          echo ===== Boost Build: 32-bit x86 =====
           echo.
 
           .\b2.exe stage ^
@@ -353,6 +364,7 @@ jobs:
             --variant=release ^
             address-model=32 ^
             architecture=x86 ^
+            threading=multi ^
             "-sZLIB_SOURCE=%GITHUB_WORKSPACE%\Library\zlib\include\zlib" ^
             "-sZLIB_BINARY=%GITHUB_WORKSPACE%\Library\zlib\lib\release" ^
             "--prefix=%GITHUB_WORKSPACE%\Library\boost" ^
@@ -361,9 +373,12 @@ jobs:
 
           if errorlevel 1 (
             echo.
-            echo ERROR: Boost build failed.
+            echo ERROR: Boost 32-bit build failed.
             exit /b 1
           )
+
+          echo.
+          echo Boost 32-bit build completed successfully.
 
       - name: Verify Boost output
         shell: pwsh
@@ -396,25 +411,36 @@ jobs:
           Write-Host ""
           Write-Host "Boost libraries:"
 
-          $libraries = Get-ChildItem `
-            -Path (Join-Path $boost "lib") `
-            -Filter *.lib `
-            -File `
-            -ErrorAction SilentlyContinue
+          $libDirectory = Join-Path `
+            $boost `
+            "lib"
 
-          if ($libraries.Count -eq 0) {
-            Write-Host "No .lib files were found."
+          if (Test-Path $libDirectory) {
+
+            $libraries = Get-ChildItem `
+              -Path $libDirectory `
+              -Filter *.lib `
+              -File `
+              -ErrorAction SilentlyContinue
+
+            if ($libraries.Count -eq 0) {
+              Write-Host "No .lib files were found."
+            }
+            else {
+              $libraries |
+                Select-Object Name, Length |
+                Format-Table -AutoSize
+            }
           }
           else {
-            $libraries |
-              Select-Object Name, Length |
-              Format-Table -AutoSize
+            Write-Host "Boost lib directory does not exist."
           }
 
       - name: Fix hard-coded Roblox paths
         shell: pwsh
         run: |
           $root = $env:GITHUB_WORKSPACE
+
           $file = Join-Path `
             $root `
             "Library\boost\build_boost.bat"
@@ -473,6 +499,9 @@ jobs:
             echo ERROR: Roblox solution build failed.
             exit /b 1
           )
+
+          echo.
+          echo Roblox solution build completed successfully.
 
       - name: Find build outputs
         if: success()

@@ -11,11 +11,19 @@ jobs:
     runs-on: windows-2022
 
     steps:
+      # ============================================================
+      # Checkout
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 1
+
+      # ============================================================
+      # Visual Studio / MSBuild
+      # ============================================================
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
@@ -31,14 +39,131 @@ jobs:
           where cl
           cl
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Boost
-      # ------------------------------------------------------------
+      # ============================================================
+
+      - name: Check Boost source
+        shell: pwsh
+        run: |
+          $boost = Join-Path $env:GITHUB_WORKSPACE "Library\boost"
+
+          Write-Host "Boost directory:"
+          Write-Host $boost
+
+          if (-not (Test-Path $boost)) {
+            throw "Library\boost does not exist."
+          }
+
+          Write-Host ""
+          Write-Host "Checking Boost.Build..."
+
+          $buildSystem = Join-Path $boost "tools\build\src\build-system.jam"
+
+          if (Test-Path $buildSystem) {
+            Write-Host "build-system.jam already exists."
+          }
+          else {
+            Write-Host "build-system.jam is missing."
+            Write-Host "The repository Boost.Build tree is incomplete."
+          }
+
+      - name: Download Boost.Build 1.74
+        shell: pwsh
+        run: |
+          $boost = Join-Path $env:GITHUB_WORKSPACE "Library\boost"
+          $buildSrc = Join-Path $boost "tools\build\src"
+
+          $buildSystem = Join-Path $buildSrc "build-system.jam"
+
+          if (Test-Path $buildSystem) {
+            Write-Host "Boost.Build is already complete."
+            exit 0
+          }
+
+          Write-Host "Downloading Boost 1.74.0 Boost.Build source..."
+
+          $temp = Join-Path $env:RUNNER_TEMP "boost-build-1.74"
+
+          if (Test-Path $temp) {
+            Remove-Item $temp -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path $temp | Out-Null
+
+          $zip = Join-Path $temp "boost_1_74_0.zip"
+
+          Invoke-WebRequest `
+            -Uri "https://archives.boost.io/release/1.74.0/source/boost_1_74_0.zip" `
+            -OutFile $zip
+
+          Write-Host "Extracting Boost 1.74.0..."
+
+          Expand-Archive `
+            -Path $zip `
+            -DestinationPath $temp `
+            -Force
+
+          $source = Join-Path $temp "boost_1_74_0\tools\build"
+
+          if (-not (Test-Path $source)) {
+            throw "Downloaded Boost.Build source was not found."
+          }
+
+          Write-Host "Replacing incomplete tools\build..."
+
+          $destination = Join-Path $boost "tools\build"
+
+          if (Test-Path $destination) {
+            Remove-Item $destination -Recurse -Force
+          }
+
+          Copy-Item `
+            -Path $source `
+            -Destination $destination `
+            -Recurse `
+            -Force
+
+          $buildSystem = Join-Path `
+            $destination `
+            "src\build-system.jam"
+
+          if (-not (Test-Path $buildSystem)) {
+            throw "build-system.jam is still missing after replacement."
+          }
+
+          Write-Host ""
+          Write-Host "Boost.Build fixed successfully:"
+          Write-Host $buildSystem
+
+      - name: Verify Boost.Build
+        shell: pwsh
+        run: |
+          $boost = Join-Path $env:GITHUB_WORKSPACE "Library\boost"
+
+          $required = @(
+            "tools\build\src\build-system.jam",
+            "tools\build\src\kernel\bootstrap.jam",
+            "tools\build\src\kernel\modules.jam",
+            "tools\build\boost-build.jam"
+          )
+
+          foreach ($file in $required) {
+            $path = Join-Path $boost $file
+
+            if (-not (Test-Path $path)) {
+              throw "Missing Boost.Build file: $path"
+            }
+
+            Write-Host "OK: $file"
+          }
 
       - name: Bootstrap Boost
         shell: cmd
         working-directory: Library\boost
         run: |
+          if exist b2.exe del /q b2.exe
+
           call bootstrap.bat msvc
 
           if not exist b2.exe (
@@ -48,35 +173,8 @@ jobs:
           )
 
           echo.
-          echo Boost b2.exe created successfully.
+          echo b2.exe created successfully.
           dir b2.exe
-
-      - name: Locate Boost.Build files
-        shell: pwsh
-        working-directory: Library\boost
-        run: |
-          Write-Host "Searching for build-system.jam..."
-          $files = Get-ChildItem -Path . -Filter "build-system.jam" -Recurse -File
-
-          if ($files.Count -eq 0) {
-            Write-Host "ERROR: build-system.jam was not found."
-          }
-          else {
-            $files | Select-Object -ExpandProperty FullName
-          }
-
-          Write-Host ""
-          Write-Host "Boost.Build directory:"
-          if (Test-Path ".\tools\build") {
-            Get-ChildItem ".\tools\build" -Force
-          }
-          else {
-            Write-Host "ERROR: tools\build does not exist."
-          }
-
-          Write-Host ""
-          Write-Host "Boost root:"
-          Get-ChildItem "." -Force
 
       - name: Build Boost
         shell: cmd
@@ -88,9 +186,8 @@ jobs:
           echo GITHUB_WORKSPACE=%GITHUB_WORKSPACE%
           echo.
 
-          if not exist "%BOOST_BUILD_PATH%" (
-            echo ERROR: Boost.Build directory does not exist:
-            echo %BOOST_BUILD_PATH%
+          if not exist "%BOOST_BUILD_PATH%\src\build-system.jam" (
+            echo ERROR: build-system.jam is missing.
             exit /b 1
           )
 
@@ -107,53 +204,47 @@ jobs:
             "--libdir=%GITHUB_WORKSPACE%\Library\boost\lib" ^
             "--includedir=%GITHUB_WORKSPACE%\Library\boost\include"
 
-      # ------------------------------------------------------------
-      # Build Roblox
-      # ------------------------------------------------------------
-
-      - name: Inspect repository build files
-        shell: pwsh
-        run: |
-          Write-Host "Solution:"
-          Get-Item ".\Roblox.sln"
-
-          Write-Host ""
-          Write-Host "WindowsClient project:"
-          Get-Item ".\WindowsClient.vcxproj"
-
-          Write-Host ""
-          Write-Host "Build scripts:"
-          Get-ChildItem -Path . -Filter "*.bat" -Recurse -File |
-            Select-Object -First 30 -ExpandProperty FullName
+      # ============================================================
+      # Fix repository-specific paths
+      # ============================================================
 
       - name: Fix hard-coded Roblox paths
         shell: pwsh
         run: |
           $root = $env:GITHUB_WORKSPACE
 
-          Write-Host "Workspace: $root"
-
-          # Replace the old developer-machine path used by the repository.
-          $files = @(
+          $file = Join-Path `
+            $root `
             "Library\boost\build_boost.bat"
-          )
 
-          foreach ($file in $files) {
-            $path = Join-Path $root $file
+          if (Test-Path $file) {
+            Write-Host "Patching $file"
 
-            if (Test-Path $path) {
-              Write-Host "Patching $file"
+            $text = Get-Content $file -Raw
 
-              $text = Get-Content $path -Raw
+            $text = $text.Replace(
+              "D:\Roblox\Source",
+              $root
+            )
 
-              $text = $text.Replace(
-                "D:\Roblox\Source",
-                $root
-              )
-
-              Set-Content -Path $path -Value $text -NoNewline
-            }
+            Set-Content `
+              -Path $file `
+              -Value $text `
+              -NoNewline
           }
+
+      # ============================================================
+      # Build Roblox
+      # ============================================================
+
+      - name: Verify solution
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "Roblox.sln")) {
+            throw "Roblox.sln was not found."
+          }
+
+          Write-Host "Roblox.sln found."
 
       - name: Build Roblox solution
         shell: cmd
@@ -165,15 +256,15 @@ jobs:
             /p:PreferredToolArchitecture=x86 ^
             /verbosity:minimal
 
-      # ------------------------------------------------------------
-      # Collect build output
-      # ------------------------------------------------------------
+      # ============================================================
+      # Find outputs
+      # ============================================================
 
       - name: Find build outputs
         if: success()
         shell: pwsh
         run: |
-          Write-Host "Searching for executables..."
+          Write-Host "Searching for executables and DLLs..."
 
           $files = Get-ChildItem `
             -Path $env:GITHUB_WORKSPACE `
@@ -190,6 +281,10 @@ jobs:
               Select-Object FullName, Length |
               Format-Table -AutoSize
           }
+
+      # ============================================================
+      # Upload artifact
+      # ============================================================
 
       - name: Upload build artifacts
         if: success()
